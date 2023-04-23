@@ -31,7 +31,13 @@ import General.Log
 import General.Util
 import Prelude
 import qualified Data.ByteString.UTF8 as UTF8
-
+import qualified Data.Aeson as Json
+import qualified Data.ByteString.Builder as BS
+import qualified Data.Binary.Builder as B
+import Control.Monad (forM_)
+import qualified Data.Text.Encoding as T
+import qualified Data.Aeson.Text as Json
+import qualified Data.Text.Lazy as T
 
 data Input = Input
     {inputURL :: [String]
@@ -65,6 +71,7 @@ data Output
     | OutputHTML LBS.ByteString
     | OutputJavascript LBS.ByteString
     | OutputJSON Encoding
+    | StreamJSON [Json.Value]
     | OutputFail LBS.ByteString
     | OutputFile FilePath
       deriving Show
@@ -77,6 +84,7 @@ forceBS (OutputHTML x) = force x
 forceBS (OutputJavascript x) = force x
 forceBS (OutputFail x) = force x
 forceBS (OutputFile x) = rnf x `seq` LBS.empty
+forceBS (StreamJSON x) = rnf x `seq` LBS.empty
 
 instance NFData Output where
     rnf x = forceBS x `seq` ()
@@ -181,6 +189,16 @@ server log Server{..} act = do
                     ([("content-type",c) | Just c <- [lookup (takeExtension file) contentType]] ++ secH) file Nothing
                 OutputText{} -> responseLBS status200 (("content-type","text/plain") : secH) bs
                 OutputJSON{} -> responseLBS status200 (("content-type","application/json") : ("access-control-allow-origin","*") : secH) bs
+                StreamJSON s -> responseStream status200 [] $ \write flush -> do
+                    let writeItemLine prefix item = do
+                            write . T.encodeUtf8Builder . (prefix <>) . T.toStrict . Json.encodeToLazyText $ item
+                            write $ BS.byteString "\n"
+                            flush
+                    case s of
+                        [] -> pure ()
+                        (x:xs) -> writeItemLine "[ " x >> mapM_ (writeItemLine ", ") xs
+                    write $ BS.byteString "]"
+                    flush
                 OutputFail{} -> responseLBS status400 (("content-type","text/plain") : secH) bs
                 OutputHTML{} -> responseLBS status200 (("content-type","text/html") : secH) bs
                 OutputJavascript{} -> responseLBS status200 (("content-type","text/javascript") : secH) bs

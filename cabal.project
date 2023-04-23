@@ -1,0 +1,3 @@
+packages: *.cabal
+
+allow-newer: tagsoup-megaparsec:megaparsec, megaparsec:exceptions

@@ -24,12 +24,15 @@ module Action.Tmp.ParseTag
   , tagText
   , tagOpen
   , tagClose
+  -- * Re-exports
+  , MonadParsec(..), Token(..)
+  , StringLike(..)
   ) where
 
 import Data.Char (isSpace)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NE
-import Data.Semigroup ((<>))
+import Data.Semigroup ((<>), sconcat)
 import qualified Data.Set as Set
 import Text.HTML.TagSoup
 import Text.StringLike
@@ -39,24 +42,44 @@ import Text.Megaparsec hiding (satisfy)
 -- import Control.Monad.Combinators
 import Text.Megaparsec.Error
 import Text.Megaparsec.Pos
+import qualified Data.ByteString as BS
+import qualified Codec.Binary.UTF8.String
 -- import Text.Megaparsec.Prim
 
 -- | Different modules corresponding to various types of streams (@String@,
 -- @Text@, @ByteString@) define it differently, so user can use “abstract”
 -- @Parser@ type and easily change it by importing different “type
 -- modules”. This one is for TagSoup tags.
-type TagParser str = Parsec Dec [Tag str]
+type TagParser str = Parsec () [Tag str]
 
 -- instance (Show str) => ShowToken (Tag str) where
 --     showTokens tags = unwords (NE.toList (NE.map show tags))
 
-instance (Ord str) => Stream [Tag str] where
-  type Token [Tag str] = Tag str
-  uncons [] = Nothing
-  uncons (t:ts) = Just (t, ts)
-  {-# INLINE uncons #-}
-  updatePos = const updatePosTag
-  {-# INLINE updatePos #-}
+-- instance (Ord str) => Stream [Tag str] where
+--   type Token [Tag str] = Tag str
+
+--   type Tokens [Tag str] = [Tag str]
+
+--   tokensToChunk = const id
+
+--   chunkToTokens = const id
+
+--   chunkLength = const length
+
+--   take1_ [] = Nothing
+--   take1_ (x:xs) = Just (x, xs)
+
+--   takeN_ = undefined
+--   takeWhile_ = undefined
+
+  -- uncons [] = Nothing
+  -- uncons (t:ts) = Just (t, ts)
+  -- {-# INLINE uncons #-}
+  -- updatePos = const updatePosTag
+  -- {-# INLINE updatePos #-}
+
+instance VisualStream [Tag BS.ByteString] where
+  showTokens _ tokens = sconcat $ NE.map show tokens -- (Codec.Binary.UTF8.String.decode . BS.unpack)
 
 updatePosTag
   :: Pos                    -- ^ Tab width
@@ -65,7 +88,7 @@ updatePosTag
   -> (SourcePos, SourcePos) -- ^ Actual position and incremented position
 updatePosTag _ apos@(SourcePos n l c) _ = (apos, npos)
   where
-    u = unsafePos 1
+    u = mkPos 1
     npos = SourcePos n l (c <> u)
 
 -- | Parses a text block containing only characters which satisfy 'isSpace'.
@@ -93,15 +116,15 @@ lexeme p = p <* whitespace
 -- | Parses any tag.
 -- As all the tag parsers, it consumes the whitespace immediately after the parsed tag.
 anyTag :: (StringLike str, MonadParsec e s m, Token s ~ Tag str) => m (Tag str)
-anyTag = lexeme $ token Right Nothing
+anyTag = lexeme $ token Just mempty
 
 -- | Parse a tag if it satisfies the predicate.
 -- As all the tag parsers, it consumes the whitespace immediately after the parsed tag.
 satisfy :: (StringLike str, MonadParsec e s m, Token s ~ Tag str) => (Tag str -> Bool) -> m (Tag str)
-satisfy f = lexeme $ token testTag Nothing
+satisfy f = lexeme $ token testTag mempty
   where testTag x = if f x
-                       then Right x
-                       else Left (Set.singleton (Tokens (x:|[])), Set.empty, Set.empty)
+                       then Just x
+                       else Nothing -- Left (Set.singleton (Tokens (x:|[])), Set.empty, Set.empty)
 
 -- | Parse any opening tag.
 -- As all the tag parsers, it consumes the whitespace immediately after the parsed tag.

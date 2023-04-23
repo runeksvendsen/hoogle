@@ -48,6 +48,12 @@ import Data.Monoid
 import Prelude
 
 import qualified Data.Aeson as JSON
+import Output.Items (listItems)
+import qualified Data.Aeson as Json
+import qualified Data.Aeson.Encoding as Json
+import Data.Functor ((<&>))
+import Data.Map.Strict (Map)
+import qualified Data.Text as T
 
 actionServer :: CmdLine -> IO ()
 actionServer cmd@Server{..} = do
@@ -144,6 +150,21 @@ replyServer log local links haddock store cdn home htmlDir scope Input{..} = cas
         pure $ case stats of
             Nothing -> OutputFail $ lbstrPack "GHC Statistics is not enabled, restart with +RTS -T"
             Just x -> OutputText $ lbstrPack $ replace ", " "\n" $ takeWhile (/= '}') $ drop1 $ dropWhile (/= '{') $ show x
+    ["all"] -> do
+        -- 'targetType' is one of: package, module or empty string.
+        -- Below we interpret the empty string as "other" (ie. not package or module).
+        let mFilterType = lookup "type" inputArgs <&> \str -> if str == "other" then "" else str
+            mFilterResults = mFilterType <&> \typ -> filter (\item -> targetType item == typ)
+            filterResults = fromMaybe id mFilterResults
+            removeStuff :: Target -> Map T.Text (Maybe String)
+            removeStuff item = Map.fromList
+                [ ("item", Just $ targetItem item)
+                , ("moduleName", fst <$> targetModule item)
+                , ("packageName", fst <$> targetPackage item)
+                , ("url", Just $ targetURL item)
+                ]
+
+        pure $ StreamJSON $ map (Json.toJSON . removeStuff) . filterResults $ listItems store
     "haddock":xs | Just x <- haddock -> do
         let file = intercalate "/" $ x:xs
         pure $ OutputFile $ file ++ (if hasTrailingPathSeparator file then "index.html" else "")

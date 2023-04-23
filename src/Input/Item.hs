@@ -1,5 +1,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving, DeriveDataTypeable, DeriveFunctor, ViewPatterns #-}
 {-# LANGUAGE RecordWildCards, OverloadedStrings, PatternGuards, ScopedTypeVariables #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 -- | Types used to generate the input.
 module Input.Item(
@@ -30,6 +32,8 @@ import Prelude
 import qualified Data.Aeson as J
 import Data.Aeson.Types
 import Test.QuickCheck
+import GHC.Generics (Generic)
+import qualified Data.Aeson as Json
 ---------------------------------------------------------------------
 -- TYPES
 
@@ -114,7 +118,7 @@ data Target = Target
     ,targetType :: String -- ^ One of package, module or empty string
     ,targetItem :: String -- ^ HTML span of the item, using @\<s0\>@ for the name and @\<s1\>@ onwards for arguments
     ,targetDocs :: String -- ^ HTML documentation to show, a sequence of block level elements
-    } deriving (Show,Eq,Ord)
+    } deriving (Show,Eq,Ord,Generic)
 
 instance NFData Target where
     rnf (Target a b c d e f) = rnf a `seq` rnf b `seq` rnf c `seq` rnf d `seq` rnf e `seq` rnf f
