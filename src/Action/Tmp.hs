@@ -10,7 +10,7 @@ import qualified Data.ByteString as BS
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import qualified System.IO as IO
-import Control.Monad (forM_, unless, guard, void)
+import Control.Monad (forM_, unless, guard, void, when)
 import qualified Text.HTML.TagSoup as Html
 import Text.HTML.TagSoup (Tag(..))
 import Text.Show.Pretty
@@ -38,10 +38,11 @@ testParseHtml = do
     "/nix/store/hs8dbwgs3mxj6qnl3zxbb8rp22722fv6-ghc-8.6.5-doc/share/doc/ghc/html/libraries/base-4.12.0.0/GHC-IO-Encoding-UTF16.html"
   either
     print -- MP.errorBundlePretty
-    (\res -> do
+    (\resLst -> do
       putStrLn "Success! Results:"
-      print res
-      -- (BS.putStrLn . mconcat . intersperse " " . renderFun) res
+      forM_ resLst $ \res ->
+        when (isFunction res) $
+          print res
     )
     eRes
 
@@ -78,23 +79,40 @@ pName modName = do
     pure $ lookup "class" attrs == Just "def"
   name <- MP.dbg "name" $ P.tagText >>= \(TagText name) -> pure $ unlines [show name] `trace` name
   MP.dbg "a_close" $ P.tagClose "a"
-  MP.dbg "has type" $ match $ \mi -> do
-    TagText t <- mi
-    pure $ t == " :: "
-  -- 1. TagOpen containing module name in the "title" attribute
-  firstTypeModuleTag@(TagOpen "a" attrs) <- match $ \mi -> do -- TODO: write a combinator that can return what it matches on
-    TagOpen "a" attrs <- mi
-    pure $ isJust $ lookup "title" attrs
-  let firstTypeModule = fromMaybe (error $ "BUG: firstTypeTag: " <> show firstTypeModuleTag) $ lookup "title" attrs
-  -- 2. TagText containing the (unqualified) type name
-  TagText firstTypeName <- match $ \mi -> do -- TODO: write a combinator that can return what it matches on
-    TagText _ <- mi
-    pure True
-  -- 3. TagClose "a"
-  P.tagClose "a"
-  toEndOfSignature <- pEndFunctionSignature -- >>= \eos -> pure $ ("toEndOfSignature: " <> show eos) `trace` eos
-  pure (name, firstTypeModule <> "." <> firstTypeName, toEndOfSignature)
+  pHasType
+  -- mRhsLhs <- MP.between pHasType (MP.dbg "end" pEndFunctionSignature) $ do
+  (lhs, end) <- MP.someTill_
+    (traceAs "anyTag BEFORE arrow" P.anyTag)
+    ((Left <$> pArrow) <|> (Right <$> (MP.dbg "lhs end" $ MP.try pEndFunctionSignature)))
+  (mRhs, remLhs) <- case end of
+    Right _ -> pure (Nothing, "")
+    Left remLhs -> do
+      res <- MP.someTill (traceAs "anyTag AFTER arrow" P.anyTag) (MP.dbg "rhs end" $ MP.try pEndFunctionSignature)
+      pure (Just res, remLhs)
+    -- pure
+  pure (name, (lhs ++ [TagText remLhs], mRhs))
+  where
+    traceAs name action = MP.dbg name action
 
+    pHasType =
+      MP.dbg "has type" $ match $ \mi -> do
+        TagText " :: " <- mi
+        pure True
+
+    pArrow =
+      MP.dbg "arrow" $ do
+        let testTag (TagText t) = " -> " `BS.stripSuffix` t
+            testTag _ = Nothing
+        MP.token testTag mempty
+
+  --   satisfy f =
+  -- where
+  --   testChar x = if f x then Just x else Nothing
+
+    pEndFunctionSignature = void $
+      match $ \mi -> do
+        TagOpen "a" attrs <- mi
+        pure $ lookup "class" attrs == Just "link"
 
 pSrc name = do
   tagsSrc <- flip fix [] $ \loop accum -> do
@@ -108,13 +126,6 @@ pSrc name = do
   src <- extractSomething tagsSrc >>= \src' -> pure $ ("extracted src: " <> show src') `trace` src'
 
   pure (name, src)
-
--- pEndFunctionSignature
---   :: (MP.MonadParsec e s m, P.StringLike str, MonadFail m, MP.Token s ~ Tag str, Show str, MP.VisualStream s) => m [Tag str]
-pEndFunctionSignature = MP.dbg "pEndFunctionSignature" $
-  MP.manyTill P.anyTag $ match $ \mi -> do
-      TagOpen "a" attrs <- mi
-      pure $ lookup "class" attrs == Just "link"
 
 pRest modName name src = do
   tagsDst <- flip fix [] $ \loop accum ->
@@ -148,14 +159,17 @@ anyTagOrEof
   => f (Either () (Tag str))
 anyTagOrEof = (Right <$> P.anyTag) <|> (Left <$> MP.eof)
 
-type Res = (BS.ByteString, BS.ByteString, [Tag BS.ByteString])
+type Res = (BS.ByteString, ([Tag BS.ByteString], Maybe [Tag BS.ByteString]))
 data Result str a = UselessTag (Tag str) | Good Res | EOF
+
+isFunction :: Res -> Bool
+isFunction = isJust . snd . snd
 
 newParser modName =
   go []
   where
     go accum = do
-      r <- (Good <$> pName') <|> (UselessTag <$> P.anyTag) <|> (EOF <$ MP.eof)
+      r <- parser
       case r of
         Good res -> do
           go $ res : accum
