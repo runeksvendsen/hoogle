@@ -2,6 +2,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Action.Tmp where
 
 import qualified Text.HTMLEntity as HTML
@@ -82,7 +83,7 @@ pName modName = do
   pHasType
   -- mRhsLhs <- MP.between pHasType (MP.dbg "end" pEndFunctionSignature) $ do
   (lhs, end) <- MP.someTill_
-    (traceAs "anyTag BEFORE arrow" P.anyTag)
+    (traceAs "anyTag BEFORE arrow" $ parseIdentifier <|> parseParens)
     ((Left <$> pArrow) <|> (Right <$> (MP.dbg "lhs end" $ MP.try pEndFunctionSignature)))
   (mRhs, remLhs) <- case end of
     Right _ -> pure (Nothing, "")
@@ -90,7 +91,7 @@ pName modName = do
       res <- MP.someTill (traceAs "anyTag AFTER arrow" P.anyTag) (MP.dbg "rhs end" $ MP.try pEndFunctionSignature)
       pure (Just res, remLhs)
     -- pure
-  pure (name, (lhs ++ [TagText remLhs], mRhs))
+  pure (name, (lhs ++ [Identifier remLhs], mRhs))
   where
     traceAs name action = MP.dbg name action
 
@@ -105,14 +106,31 @@ pName modName = do
             testTag _ = Nothing
         MP.token testTag mempty
 
-  --   satisfy f =
-  -- where
-  --   testChar x = if f x then Just x else Nothing
+    parseIdentifier = do
+      moduleName <- do
+        let testTag (TagOpen "a" attrs) = lookup "title" attrs
+            testTag _ = Nothing
+        MP.token testTag mempty
+      typeName <- do
+        let testTag (TagText typeName) = Just typeName
+            testTag _ = Nothing
+        MP.token testTag mempty
+      P.tagClose "a"
+      pure $ Identifier $ moduleName <> "." <> typeName
+
+    parseParens = do
+      let testTag (TagText parens) = Just $ Identifier parens
+          testTag _ = Nothing
+      MP.token testTag mempty
 
     pEndFunctionSignature = void $
       match $ \mi -> do
         TagOpen "a" attrs <- mi
         pure $ lookup "class" attrs == Just "link"
+
+-- | Fully qualified identifier
+newtype Identifier str = Identifier str
+  deriving (Eq, Show, Ord, Monoid, Semigroup)
 
 pSrc name = do
   tagsSrc <- flip fix [] $ \loop accum -> do
@@ -159,7 +177,7 @@ anyTagOrEof
   => f (Either () (Tag str))
 anyTagOrEof = (Right <$> P.anyTag) <|> (Left <$> MP.eof)
 
-type Res = (BS.ByteString, ([Tag BS.ByteString], Maybe [Tag BS.ByteString]))
+type Res = (BS.ByteString, ([Identifier BS.ByteString], Maybe [Tag BS.ByteString]))
 data Result str a = UselessTag (Tag str) | Good Res | EOF
 
 isFunction :: Res -> Bool
