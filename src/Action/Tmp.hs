@@ -83,7 +83,9 @@ pName modName = do
   (mRhs, remLhs) <- case end of
     Right _ -> pure (Nothing, "")
     Left remLhs -> do
-      res <- MP.someTill (traceAs "anyTag AFTER arrow" P.anyTag) (MP.dbg "rhs end" $ MP.try pEndFunctionSignature)
+      res <- MP.someTill
+        (traceAs "anyTag AFTER arrow" P.anyTag)
+        (MP.dbg "rhs end" $ MP.try pEndFunctionSignature)
       pure (Just res, remLhs)
   pure (name, (lhs ++ [Identifier remLhs], mRhs))
   where
