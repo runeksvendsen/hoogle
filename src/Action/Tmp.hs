@@ -38,7 +38,7 @@ testParseHtml = do
     "GHC.IO.Encoding.UTF16"
     "/nix/store/hs8dbwgs3mxj6qnl3zxbb8rp22722fv6-ghc-8.6.5-doc/share/doc/ghc/html/libraries/base-4.12.0.0/GHC-IO-Encoding-UTF16.html"
   either
-    print -- MP.errorBundlePretty
+    print -- TODO: use MP.errorBundlePretty
     (\resLst -> do
       putStrLn "Success! Results:"
       forM_ resLst $ \res ->
@@ -66,21 +66,17 @@ match =
     match' :: (Maybe a -> Maybe Bool) -> a -> Bool
     match' f = \i -> fromMaybe False (f $ Just i)
 
--- p :: (MP.VisualStream s, MP.Token s ~ Tag str, Show str, P.StringLike str, Semigroup str) =>
---   str -> MP.ParsecT Void s m (Fun str)
 pName modName = do
   -- MP.dbg "p_open" $ P.tagOpen "p"
   MP.dbg "p_open" $ match $ \mi -> do
     TagOpen "p" attrs <- mi
     pure $ lookup "class" attrs == Just "src"
-  -- MP.dbg "a_open" $ P.tagOpen "a"
   MP.dbg "a_open" $ match $ \mi -> do
     TagOpen "a" attrs <- mi
     pure $ lookup "class" attrs == Just "def"
   name <- MP.dbg "name" $ P.tagText >>= \(TagText name) -> pure $ unlines [show name] `trace` name
   MP.dbg "a_close" $ P.tagClose "a"
   pHasType
-  -- mRhsLhs <- MP.between pHasType (MP.dbg "end" pEndFunctionSignature) $ do
   (lhs, end) <- MP.someTill_
     (traceAs "anyTag BEFORE arrow" $ parseIdentifier <|> parseParens)
     ((Left <$> pArrow) <|> (Right <$> (MP.dbg "lhs end" $ MP.try pEndFunctionSignature)))
@@ -89,7 +85,6 @@ pName modName = do
     Left remLhs -> do
       res <- MP.someTill (traceAs "anyTag AFTER arrow" P.anyTag) (MP.dbg "rhs end" $ MP.try pEndFunctionSignature)
       pure (Just res, remLhs)
-    -- pure
   pure (name, (lhs ++ [Identifier remLhs], mRhs))
   where
     traceAs name action = MP.dbg name action
@@ -132,7 +127,11 @@ newtype Identifier str = Identifier str
   deriving (Eq, Show, Ord, Monoid, Semigroup)
 
 type Res = (BS.ByteString, ([Identifier BS.ByteString], Maybe [Tag BS.ByteString]))
-data Result str a = UselessTag (Tag str) | Good Res | EOF
+
+data Result str a
+  = UselessTag (Tag str)
+  | Good Res
+  | EOF
 
 isFunction :: Res -> Bool
 isFunction = isJust . snd . snd
@@ -140,6 +139,8 @@ isFunction = isJust . snd . snd
 newParser modName =
   go []
   where
+    parser = (Good <$> pName modName) <|> (UselessTag <$> P.anyTag) <|> (EOF <$ MP.eof)
+
     go accum = do
       r <- parser
       case r of
@@ -150,10 +151,6 @@ newParser modName =
         EOF ->
           pure accum
 
-    parser = (Good <$> pName') <|> (UselessTag <$> P.anyTag) <|> (EOF <$ MP.eof)
-
-    pName' = pName modName --  >>= \res -> pure $ ("pName: " <> show res) `trace` res
-
 parseFile ::
   BS.ByteString
   -> FilePath
@@ -161,5 +158,4 @@ parseFile ::
 parseFile modName fn = do
   content <- BS.readFile fn
   let tags = Html.parseTags content
-  -- pPrint tags
   pure $ MP.parse (newParser modName) "lol" tags
