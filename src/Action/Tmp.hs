@@ -47,7 +47,6 @@ testParseHtml = do
     )
     eRes
 
-
 data Fun str = Fun
   { funName :: str
   , funArg :: [str]
@@ -131,51 +130,6 @@ pName modName = do
 -- | Fully qualified identifier
 newtype Identifier str = Identifier str
   deriving (Eq, Show, Ord, Monoid, Semigroup)
-
-pSrc name = do
-  tagsSrc <- flip fix [] $ \loop accum -> do
-    someTag <- P.anyTag >>= \tag' -> pure $ ("tagsSrc loop: " <> show tag') `trace` tag'
-    case someTag of
-      TagText " -> " -> do
-        let res = reverse accum
-        pure $ ("got src: " <> show res) `trace` reverse accum
-      other ->
-        loop (other : accum)
-  src <- extractSomething tagsSrc >>= \src' -> pure $ ("extracted src: " <> show src') `trace` src'
-
-  pure (name, src)
-
-pRest modName name src = do
-  tagsDst <- flip fix [] $ \loop accum ->
-    MP.dbg ("tagsDst") $ P.anyTag >>= \case
-      TagOpen "a" attrs | lookup "class" attrs == Just "link" ->
-        pure $ reverse accum
-      other ->
-        ("tagsDst loop: " <> show other) `trace` loop (other : accum)
-  dst <- extractSomething tagsDst
-  pure $ ("got dst: " <> show dst) `trace` ()
-  pure $ Fun (modName <> "." <> name) src dst
-
-lookupE name tags = maybe (Left $ show name <> " not found in " <> show tags) Right (lookup name tags)
-
-mkFancyError errLst =
-  MP.FancyError 0 $ Set.fromList (map MP.ErrorFail errLst :: [MP.ErrorFancy Void])
-
-extractSomething tags = do
-  let res = tags <&> \case
-        TagText t -> Right t
-        TagOpen _ attrs -> lookupE "title" attrs
-        other -> Left $ "Unexpected tag: " <> show other
-      src = rights res
-      errors = lefts res
-  unless (null errors) $
-    MP.parseError $ mkFancyError errors
-  pure src
-
-anyTagOrEof
-  :: (P.StringLike str, MP.MonadParsec e s f, MP.Token s ~ Tag str)
-  => f (Either () (Tag str))
-anyTagOrEof = (Right <$> P.anyTag) <|> (Left <$> MP.eof)
 
 type Res = (BS.ByteString, ([Identifier BS.ByteString], Maybe [Tag BS.ByteString]))
 data Result str a = UselessTag (Tag str) | Good Res | EOF
