@@ -30,6 +30,9 @@ import qualified Text.Megaparsec.Debug as MP
 import Data.Void (Void)
 import Debug.Trace (trace)
 import Control.Applicative ((<|>))
+import qualified Data.Text.Encoding.Error as TEE
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.IO as TIO
 
 main fn = testParseHtml
 
@@ -41,9 +44,10 @@ testParseHtml = do
     print -- TODO: use MP.errorBundlePretty
     (\resLst -> do
       putStrLn "Success! Results:"
-      forM_ resLst $ \res ->
-        when (isFunction res) $
-          print res
+      forM_ resLst $ \res -> do
+        let mFun = resToFun res
+        forM_ mFun $ \fun ->
+          TIO.putStrLn . T.unwords $ renderFun fun
     )
     eRes
 
@@ -67,7 +71,6 @@ match =
     match' f = \i -> fromMaybe False (f $ Just i)
 
 pName modName = do
-  -- MP.dbg "p_open" $ P.tagOpen "p"
   MP.dbg "p_open" $ match $ \mi -> do
     TagOpen "p" attrs <- mi
     pure $ lookup "class" attrs == Just "src"
@@ -78,14 +81,14 @@ pName modName = do
   MP.dbg "a_close" $ P.tagClose "a"
   pHasType
   (lhs, end) <- MP.someTill_
-    (traceAs "anyTag BEFORE arrow" $ parseIdentifier <|> parseParens)
-    ((Left <$> pArrow) <|> (Right <$> (MP.dbg "lhs end" $ MP.try pEndFunctionSignature)))
+    (traceAs "LHS identifier" $ parseIdentifier <|> parseParens)
+    ((Left <$> pArrow) <|> (Right <$> (MP.dbg "LHS end" $ MP.try pEndFunctionSignature)))
   (mRhs, remLhs) <- case end of
     Right _ -> pure (Nothing, "")
     Left remLhs -> do
       res <- MP.someTill
-        (traceAs "anyTag AFTER arrow" P.anyTag)
-        (MP.dbg "rhs end" $ MP.try pEndFunctionSignature)
+        (traceAs "RHS identifier" $ parseIdentifier <|> parseParens)
+        (MP.dbg "RHS end" $ MP.try pEndFunctionSignature)
       pure (Just res, remLhs)
   pure (name, (lhs ++ [Identifier remLhs], mRhs))
   where
@@ -125,10 +128,32 @@ pName modName = do
         pure $ lookup "class" attrs == Just "link"
 
 -- | Fully qualified identifier
-newtype Identifier str = Identifier str
+newtype Identifier str = Identifier { unIdentifier :: str }
   deriving (Eq, Show, Ord, Monoid, Semigroup)
 
-type Res = (BS.ByteString, ([Identifier BS.ByteString], Maybe [Tag BS.ByteString]))
+type Res = (BS.ByteString, ([Identifier BS.ByteString], Maybe [Identifier BS.ByteString]))
+
+resToFun :: Res -> Maybe (Fun T.Text)
+resToFun (name, (lhs, mRhs)) =
+  case mRhs of
+    Nothing -> Nothing
+    Just rhs -> Just $
+      Fun
+        { funName = decodeUtf8 name
+        , funArg = [renderId lhs]
+        , funRet = [renderId rhs]
+        }
+  where
+    renderId :: [Identifier BS.ByteString] -> T.Text
+    renderId = T.unwords . map (T.strip . decodeUtf8 . unIdentifier)
+
+tmpTestIdList =
+  [ Identifier "Data.IORef.IORef"
+  , Identifier " ("
+  , Identifier "GHC.Maybe.Maybe"
+  , Identifier "GHC.IO.Encoding.Types.DecodeBuffer"
+  , Identifier ")"
+  ]
 
 data Result str a
   = UselessTag (Tag str)
@@ -161,3 +186,7 @@ parseFile modName fn = do
   content <- BS.readFile fn
   let tags = Html.parseTags content
   pure $ MP.parse (newParser modName) "lol" tags
+
+-- ### Util
+
+decodeUtf8 = TE.decodeUtf8With TEE.lenientDecode
