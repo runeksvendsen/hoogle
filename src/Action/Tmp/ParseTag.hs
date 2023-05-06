@@ -14,6 +14,7 @@
 -- Make Tags an instance of 'Stream' with 'Tag str' token type.
 module Action.Tmp.ParseTag
   ( TagParser
+  , ParsecT
   , space
   , whitespace
   , lexeme

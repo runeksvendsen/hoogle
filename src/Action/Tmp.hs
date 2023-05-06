@@ -3,6 +3,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module Action.Tmp where
 
 import qualified Text.HTMLEntity as HTML
@@ -33,32 +34,48 @@ import Control.Applicative ((<|>))
 import qualified Data.Text.Encoding.Error as TEE
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
+import qualified Text.StringLike as SL
+import Data.Bifunctor (bimap)
 
-main fn = testParseHtml
+-- | Fully qualified identifier
+newtype Identifier str = Identifier { unIdentifier :: str }
+  deriving (Eq, Show, Ord, Monoid, Semigroup)
+
+renderIdentifier :: Identifier BS.ByteString -> T.Text
+renderIdentifier = T.strip . decodeUtf8 . unIdentifier
+
+-- | A function that takes zero or more arguments
+--    (zero argument function is a value)
+data Fun str = Fun
+  { funName :: T.Text
+  , funArg :: Identifier str
+  , funRet :: [Identifier  str]
+  } deriving (Eq, Show)
+
+renderFun
+  :: Fun BS.ByteString
+  -> T.Text
+renderFun fun =
+  T.unwords $
+      funName fun
+    : "::"
+    : intersperse "->" ids
+  where
+    ids :: [T.Text]
+    ids = map renderIdentifier $ funArg fun : funRet fun
 
 testParseHtml = do
   eRes <- parseFile
-    "GHC.IO.Encoding.UTF16"
+    "Data.Text.Internal.Builder"
     "/nix/store/hs8dbwgs3mxj6qnl3zxbb8rp22722fv6-ghc-8.6.5-doc/share/doc/ghc/html/libraries/base-4.12.0.0/GHC-IO-Encoding-UTF16.html"
   either
     print -- TODO: use MP.errorBundlePretty
     (\resLst -> do
       putStrLn "Success! Results:"
-      forM_ resLst $ \res -> do
-        let mFun = resToFun res
-        forM_ mFun $ \fun ->
-          TIO.putStrLn . T.unwords $ renderFun fun
+      forM_ resLst $ \fun -> do
+          TIO.putStrLn $ renderFun fun
     )
     eRes
-
-data Fun str = Fun
-  { funName :: str
-  , funArg :: [str]
-  , funRet :: [str]
-  } deriving (Eq, Show)
-
-renderFun :: (Data.String.IsString str, Monoid str) => Fun str -> [str]
-renderFun fun = [funName fun, "::", mconcat $ funArg fun, "->", mconcat $ funRet fun]
 
 match
   :: (P.StringLike str, MP.MonadParsec e s m, MP.Token s ~ Tag str)
@@ -70,6 +87,13 @@ match =
     match' :: (Maybe a -> Maybe Bool) -> a -> Bool
     match' f = \i -> fromMaybe False (f $ Just i)
 
+pName
+  :: forall s m.
+     ( MP.VisualStream s
+     , MP.Token s ~ Tag BS.ByteString
+     )
+  => BS.ByteString
+  -> MP.ParsecT Void s m Res
 pName modName = do
   MP.dbg "p_open" $ match $ \mi -> do
     TagOpen "p" attrs <- mi
@@ -79,19 +103,35 @@ pName modName = do
     pure $ lookup "class" attrs == Just "def"
   name <- MP.dbg "name" $ P.tagText >>= \(TagText name) -> pure $ unlines [show name] `trace` name
   MP.dbg "a_close" $ P.tagClose "a"
-  pHasType
-  (lhs, end) <- MP.someTill_
-    (traceAs "LHS identifier" $ parseIdentifier <|> parseParens)
-    ((Left <$> pArrow) <|> (Right <$> (MP.dbg "LHS end" $ MP.try pEndFunctionSignature)))
-  (mRhs, remLhs) <- case end of
-    Right _ -> pure (Nothing, "")
-    Left remLhs -> do
-      res <- MP.someTill
-        (traceAs "RHS identifier" $ parseIdentifier <|> parseParens)
-        (MP.dbg "RHS end" $ MP.try pEndFunctionSignature)
-      pure (Just res, remLhs)
-  pure (name, (lhs ++ [Identifier remLhs], mRhs))
+  void pHasType
+  firstArg <- MP.dbg "firstArg" parseIdentifier >>= \case
+    Left a -> pure a
+    Right a -> pure a
+  -- Zero or more args
+  let parseManyArgs = flip fix [] $ \go accum ->
+        parseIdentifier >>= \case
+          Left res -> pure $ reverse $ res : accum
+          Right res -> go $ res : accum
+  remArgs <- MP.dbg "remArgs" parseManyArgs
+  pure $ Fun
+    { funName = decodeUtf8 $ modName <> "." <> name
+    , funArg = firstArg
+    , funRet = remArgs
+    }
   where
+    -- parseFail = MP.parseError . mkFancyError
+
+    parseIdentifier = do
+      (idFragments, end) <- MP.someTill_
+        (traceAs "identifier" $ parseIdentifierFragment <|> parseParens)
+        ((Right <$> pArrow) <|> (MP.try $ Left <$> (MP.dbg "entry end" pEndFunctionSignature)))
+      let mkRes :: BS.ByteString -> Identifier BS.ByteString
+          mkRes rem' = Identifier $ mconcat $ idFragments ++ [rem]
+          rem = case end of
+            Left () -> ""
+            Right remLhs -> remLhs
+      pure $ bimap (const $ mkRes "") mkRes end
+
     traceAs name action = MP.dbg name action
 
     pHasType =
@@ -105,7 +145,8 @@ pName modName = do
             testTag _ = Nothing
         MP.token testTag mempty
 
-    parseIdentifier = do
+    parseIdentifierFragment :: MP.ParsecT Void s m BS.ByteString
+    parseIdentifierFragment = do
       moduleName <- do
         let testTag (TagOpen "a" attrs) = lookup "title" attrs
             testTag _ = Nothing
@@ -115,10 +156,11 @@ pName modName = do
             testTag _ = Nothing
         MP.token testTag mempty
       P.tagClose "a"
-      pure $ Identifier $ moduleName <> "." <> typeName
+      pure $ moduleName <> "." <> typeName
 
+    parseParens :: MP.ParsecT Void s m BS.ByteString
     parseParens = do
-      let testTag (TagText parens) = Just $ Identifier parens
+      let testTag (TagText parens) = Just $ removeSpaces parens
           testTag _ = Nothing
       MP.token testTag mempty
 
@@ -127,25 +169,10 @@ pName modName = do
         TagOpen "a" attrs <- mi
         pure $ lookup "class" attrs == Just "link"
 
--- | Fully qualified identifier
-newtype Identifier str = Identifier { unIdentifier :: str }
-  deriving (Eq, Show, Ord, Monoid, Semigroup)
+    mkFancyError errLst =
+      MP.FancyError 0 $ Set.fromList (map MP.ErrorFail errLst :: [MP.ErrorFancy Void])
 
-type Res = (BS.ByteString, ([Identifier BS.ByteString], Maybe [Identifier BS.ByteString]))
-
-resToFun :: Res -> Maybe (Fun T.Text)
-resToFun (name, (lhs, mRhs)) =
-  case mRhs of
-    Nothing -> Nothing
-    Just rhs -> Just $
-      Fun
-        { funName = decodeUtf8 name
-        , funArg = [renderId lhs]
-        , funRet = [renderId rhs]
-        }
-  where
-    renderId :: [Identifier BS.ByteString] -> T.Text
-    renderId = T.unwords . map (T.strip . decodeUtf8 . unIdentifier)
+type Res = Fun BS.ByteString
 
 tmpTestIdList =
   [ Identifier "Data.IORef.IORef"
@@ -160,13 +187,10 @@ data Result str a
   | Good Res
   | EOF
 
-isFunction :: Res -> Bool
-isFunction = isJust . snd . snd
-
 newParser modName =
   go []
   where
-    parser = (Good <$> pName modName) <|> (UselessTag <$> P.anyTag) <|> (EOF <$ MP.eof)
+    parser = (Good <$> MP.try (pName modName)) <|> (UselessTag <$> P.anyTag) <|> (EOF <$ MP.eof)
 
     go accum = do
       r <- parser
@@ -190,3 +214,9 @@ parseFile modName fn = do
 -- ### Util
 
 decodeUtf8 = TE.decodeUtf8With TEE.lenientDecode
+
+removeSpaces :: BS.ByteString -> BS.ByteString
+removeSpaces =
+  BS.filter (/= space)
+  where
+    [space] = BS.unpack " " -- TODO: is there a better way to construct a ' ' Word8?
