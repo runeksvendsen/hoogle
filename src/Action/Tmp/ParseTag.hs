@@ -45,6 +45,7 @@ import Text.Megaparsec.Error
 import Text.Megaparsec.Pos
 import qualified Data.ByteString as BS
 import qualified Codec.Binary.UTF8.String
+import qualified Data.Text as T
 -- import Text.Megaparsec.Prim
 
 -- | Different modules corresponding to various types of streams (@String@,
@@ -53,22 +54,31 @@ import qualified Codec.Binary.UTF8.String
 -- modules”. This one is for TagSoup tags.
 type TagParser str = Parsec () [Tag str]
 
--- instance (Show str) => ShowToken (Tag str) where
---     showTokens tags = unwords (NE.toList (NE.map show tags))
+instance VisualStream (Tag T.Text) where
+    showTokens _ tags = unwords $ NE.toList (NE.map show tags)
+
+instance VisualStream [Tag T.Text] where
+  showTokens _ tokens = sconcat $ NE.map show tokens -- (Codec.Binary.UTF8.String.decode . BS.unpack)
+
+
+instance Stream (Tag T.Text) where
+  type Token (Tag T.Text) = Tag T.Text
+  type Tokens (Tag T.Text) = [Tag T.Text]
+  tokensToChunk = const id
+  chunkToTokens = const id
+  chunkLength = const length
+  take1_ = error "TODO: take1_"
+  takeN_ = error "TODO: takeN_"
+  takeWhile_ = error "TODO: takeWhile_"
 
 -- instance (Ord str) => Stream [Tag str] where
---   type Token [Tag str] = Tag str
-
---   type Tokens [Tag str] = [Tag str]
-
 --   tokensToChunk = const id
 
 --   chunkToTokens = const id
 
 --   chunkLength = const length
 
---   take1_ [] = Nothing
---   take1_ (x:xs) = Just (x, xs)
+
 
 --   takeN_ = undefined
 --   takeWhile_ = undefined

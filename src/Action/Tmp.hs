@@ -17,13 +17,15 @@ import qualified Text.HTML.TagSoup as Html
 import Text.HTML.TagSoup (Tag(..))
 import Text.Show.Pretty
 import qualified Data.String
-import Data.Functor ((<&>))
+import Data.Functor ((<&>), ($>))
 import Data.List (intersperse)
 import Data.Either (fromRight, lefts, rights)
-
+import Data.List.NonEmpty (NonEmpty( (:|) ))
+import qualified Data.List.NonEmpty as NE
 import qualified Action.Tmp.ParseTag as P
 import qualified Text.Megaparsec as MP
-import Data.Maybe (fromMaybe, isJust)
+import qualified Text.Megaparsec.Char as MP
+import Data.Maybe (fromMaybe, isJust, maybeToList, catMaybes)
 import Control.Monad.Fix (mfix)
 import Data.Function (fix)
 import qualified Data.Set as Set
@@ -35,34 +37,12 @@ import qualified Data.Text.Encoding.Error as TEE
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import qualified Text.StringLike as SL
-import Data.Bifunctor (bimap)
-
--- | Fully qualified identifier
-newtype Identifier str = Identifier { unIdentifier :: str }
-  deriving (Eq, Show, Ord, Monoid, Semigroup)
-
-renderIdentifier :: Identifier BS.ByteString -> T.Text
-renderIdentifier = T.strip . decodeUtf8 . unIdentifier
-
--- | A function that takes zero or more arguments
---    (zero argument function is a value)
-data Fun str = Fun
-  { funName :: T.Text
-  , funArg :: Identifier str
-  , funRet :: [Identifier  str]
-  } deriving (Eq, Show)
-
-renderFun
-  :: Fun BS.ByteString
-  -> T.Text
-renderFun fun =
-  T.unwords $
-      funName fun
-    : "::"
-    : intersperse "->" ids
-  where
-    ids :: [T.Text]
-    ids = map renderIdentifier $ funArg fun : funRet fun
+import Data.Bifunctor (bimap, first)
+import Data.Word (Word8)
+import qualified Data.Map.Strict as Map
+import qualified Data.Tuple
+import qualified Data.Text.IO
+import Data.Functor.Identity (Identity (Identity), runIdentity)
 
 testParseHtml = do
   eRes <- parseFile
@@ -77,23 +57,78 @@ testParseHtml = do
     )
     eRes
 
+parseFile ::
+  T.Text
+  -> FilePath
+  -> IO (Either (MP.ParseErrorBundle [Tag T.Text] Void) [Res])
+parseFile modName fn = do
+  content <- Data.Text.IO.readFile fn
+  let tags = Html.parseTags content
+  pure $ MP.parse (newParser modName) "lol" tags
+
+-- | Fully qualified identifier
+newtype Identifier str = Identifier { unIdentifier :: str }
+  deriving (Eq, Show, Ord, Monoid, Semigroup)
+
+renderIdentifier :: Identifier T.Text -> T.Text
+renderIdentifier = T.strip . unIdentifier
+
+data ParenExpr
+  = Paren_Start -- (
+  | Paren_End -- )
+    deriving (Eq, Show, Ord)
+
+renderParenExpr :: ParenExpr -> T.Text
+renderParenExpr = \case
+  Paren_Start -> "("
+  Paren_End -> ")"
+
+data ExprToken
+  = ExprToken_Paren [ParenExpr]
+  | ExprToken_Identifier (Identifier T.Text)
+    deriving (Eq, Show, Ord)
+
+renderExprTokens :: [ExprToken] -> T.Text
+renderExprTokens =
+  mconcat . map renderToken
+  where
+    renderToken = \case
+      ExprToken_Paren parenList -> mconcat $ map renderParenExpr parenList
+      ExprToken_Identifier ident -> renderIdentifier ident
+
+-- | A function that takes zero or more arguments
+--    (zero argument function is a value)
+data Fun str = Fun
+  { funName :: T.Text
+  , funArg :: [ExprToken]
+  , funRet :: [[ExprToken]]
+  } deriving (Eq, Show, Ord)
+
+renderFun
+  :: Fun T.Text
+  -> T.Text
+renderFun fun =
+  T.unwords $
+      funName fun
+    : "::"
+    : intersperse "->" ids
+  where
+    ids :: [T.Text]
+    ids = map renderExprTokens $ funArg fun : funRet fun
+
 match
-  :: (P.StringLike str, MP.MonadParsec e s m, MP.Token s ~ Tag str)
-  => (Maybe (Tag str) -> Maybe Bool)
-  -> m (Tag str)
+  :: (MP.MonadParsec e s m, MP.Token s ~ Tag T.Text, MP.Tokens s ~ [Tag T.Text])
+  => (Maybe (Tag T.Text) -> Maybe Bool)
+  -> m ()
 match =
-  P.satisfy . match'
+  void . P.satisfy . match'
   where
     match' :: (Maybe a -> Maybe Bool) -> a -> Bool
     match' f = \i -> fromMaybe False (f $ Just i)
 
 pName
-  :: forall s m.
-     ( MP.VisualStream s
-     , MP.Token s ~ Tag BS.ByteString
-     )
-  => BS.ByteString
-  -> MP.ParsecT Void s m Res
+  :: T.Text
+  -> MP.ParsecT Void [Tag T.Text] Identity Res
 pName modName = do
   MP.dbg "p_open" $ match $ \mi -> do
     TagOpen "p" attrs <- mi
@@ -101,12 +136,13 @@ pName modName = do
   MP.dbg "a_open" $ match $ \mi -> do
     TagOpen "a" attrs <- mi
     pure $ lookup "class" attrs == Just "def"
-  name <- MP.dbg "name" $ P.tagText >>= \(TagText name) -> pure $ unlines [show name] `trace` name
+  name <- MP.dbg "name" $ P.tagText >>= \(TagText name) -> pure $ unlines [T.unpack name] `trace` name
   MP.dbg "a_close" $ P.tagClose "a"
   void pHasType
   firstArg <- MP.dbg "firstArg" parseIdentifier >>= \case
     Left a -> pure a
     Right a -> pure a
+  () <- pure $ show firstArg `trace` ()
   -- Zero or more args
   let parseManyArgs = flip fix [] $ \go accum ->
         parseIdentifier >>= \case
@@ -114,23 +150,24 @@ pName modName = do
           Right res -> go $ res : accum
   remArgs <- MP.dbg "remArgs" parseManyArgs
   pure $ Fun
-    { funName = decodeUtf8 $ modName <> "." <> name
+    { funName = modName <> "." <> name
     , funArg = firstArg
     , funRet = remArgs
     }
   where
-    -- parseFail = MP.parseError . mkFancyError
-
     parseIdentifier = do
       (idFragments, end) <- MP.someTill_
-        (traceAs "identifier" $ parseIdentifierFragment <|> parseParens)
-        ((Right <$> pArrow) <|> (MP.try $ Left <$> (MP.dbg "entry end" pEndFunctionSignature)))
-      let mkRes :: BS.ByteString -> Identifier BS.ByteString
-          mkRes rem' = Identifier $ mconcat $ idFragments ++ [rem]
-          rem = case end of
-            Left () -> ""
-            Right remLhs -> remLhs
-      pure $ bimap (const $ mkRes "") mkRes end
+        (traceAs "identifier" $ parseIdentifierFragment <|> parseParensFromTag)
+        ((Right <$> pArrow) <|> (Left <$> pEndFunctionSignature))
+      let eRemainder = case end of
+            Left () -> pure Nothing -- There's nothing left
+            Right remLhs -> fmap Just $ -- There's more left
+              runIdentity $ MP.runParserT parseParens (T.unpack modName) remLhs
+      remainder <- either (parseFail . (: []) . show) pure eRemainder
+      let result = idFragments ++ maybeToList remainder
+      pure $ case end of
+        Left () -> Left result
+        Right _ -> Right result
 
     traceAs name action = MP.dbg name action
 
@@ -141,14 +178,15 @@ pName modName = do
 
     pArrow =
       MP.dbg "arrow" $ do
-        let testTag (TagText t) = " -> " `BS.stripSuffix` t
+        let testTag (TagText t) = " -> " `T.stripSuffix` t
             testTag _ = Nothing
         MP.token testTag mempty
 
-    parseIdentifierFragment :: MP.ParsecT Void s m BS.ByteString
-    parseIdentifierFragment = do
+    parseIdentifierFragment :: MP.ParsecT Void [Tag T.Text] Identity ExprToken
+    parseIdentifierFragment = MP.dbg "parseIdentifierFragment" $ do
       moduleName <- do
-        let testTag (TagOpen "a" attrs) = lookup "title" attrs
+        let testTag :: Tag T.Text -> Maybe T.Text
+            testTag (TagOpen "a" attrs) = lookup "title" attrs
             testTag _ = Nothing
         MP.token testTag mempty
       typeName <- do
@@ -156,31 +194,69 @@ pName modName = do
             testTag _ = Nothing
         MP.token testTag mempty
       P.tagClose "a"
-      pure $ moduleName <> "." <> typeName
+      pure $ ExprToken_Identifier $ Identifier $ moduleName <> "." <> typeName
 
-    parseParens :: MP.ParsecT Void s m BS.ByteString
-    parseParens = do
-      let testTag (TagText parens) = Just $ removeSpaces parens
-          testTag _ = Nothing
-      MP.token testTag mempty
+    parseParensFromTag :: MP.ParsecT Void [Tag T.Text] Identity ExprToken
+    parseParensFromTag = MP.dbg "parseParensFromTag" $ do
+      parens <- MP.token
+        (\(token :: Tag T.Text) -> case token of { TagText t -> Just t; _ -> Nothing })
+        (Set.fromList [MP.Label $ NE.fromList "text"])
+      let eRes :: Identity (Either String ExprToken)
+          eRes = fmap (first MP.errorBundlePretty) $
+            MP.runParserT parseParens (T.unpack modName) parens
+      either (parseFail . (: [])) pure (runIdentity eRes)
 
-    pEndFunctionSignature = void $
-      match $ \mi -> do
-        TagOpen "a" attrs <- mi
-        pure $ lookup "class" attrs == Just "link"
+    parseParens :: MP.ParsecT Void T.Text Identity ExprToken
+    parseParens = ExprToken_Paren <$> parenFromText
 
-    mkFancyError errLst =
-      MP.FancyError 0 $ Set.fromList (map MP.ErrorFail errLst :: [MP.ErrorFancy Void])
+    -- do
+    --   Optional:  <a ... class="link">Source</a>
+    --   Mandatory: <a ... class="selflink">#</a>
+    pEndFunctionSignature = MP.dbg "entry end" $ void $ do
+      -- Source
+      MP.optional $ do
+        match $ \mi -> do
+          TagOpen "a" attrs <- mi
+          pure $ lookup "class" attrs == Just "link"
+        match $ \mi -> do
+          TagText "Source" <- mi
+          pure True
+        P.tagClose "a"
+      -- #
+      MP.optional $ do
+        match $ \mi -> do
+          TagOpen "a" attrs <- mi
+          pure $ lookup "class" attrs == Just "selflink"
+        match $ \mi -> do
+          TagText "#" <- mi
+          pure True
+        P.tagClose "a"
 
-type Res = Fun BS.ByteString
+parenFromText
+  :: MP.ParsecT Void T.Text Identity [ParenExpr]
+parenFromText = MP.dbg "parenFromText" $ fmap catMaybes $
+  MP.manyTill ((Just <$> parenToken) <|> (MP.space $> Nothing)) MP.eof
+  where
+    parenToken =
+      MP.dbg "parenFromText.token" $ MP.token
+        (`Map.lookup` charToParenExpr)
+        (Set.fromList [MP.Label expectedChars])
 
-tmpTestIdList =
-  [ Identifier "Data.IORef.IORef"
-  , Identifier " ("
-  , Identifier "GHC.Maybe.Maybe"
-  , Identifier "GHC.IO.Encoding.Types.DecodeBuffer"
-  , Identifier ")"
-  ]
+    expectedChars :: NonEmpty Char
+    expectedChars = NE.fromList $ Map.elems parenExprToText
+
+    charToParenExpr :: Map.Map Char ParenExpr
+    charToParenExpr = mapSwap parenExprToText
+    parenExprToText :: Map.Map ParenExpr Char
+    parenExprToText = Map.fromList
+      [ (Paren_Start, '(')
+      , (Paren_End, ')')
+      ]
+
+    mapSwap :: Ord b => Map.Map a b -> Map.Map b a
+    mapSwap = Map.fromList . map Data.Tuple.swap . Map.assocs
+
+type Res = Fun T.Text
 
 data Result str a
   = UselessTag (Tag str)
@@ -202,21 +278,23 @@ newParser modName =
         EOF ->
           pure accum
 
-parseFile ::
-  BS.ByteString
-  -> FilePath
-  -> IO (Either (MP.ParseErrorBundle [Tag BS.ByteString] Void) [Res])
-parseFile modName fn = do
-  content <- BS.readFile fn
-  let tags = Html.parseTags content
-  pure $ MP.parse (newParser modName) "lol" tags
-
 -- ### Util
 
 decodeUtf8 = TE.decodeUtf8With TEE.lenientDecode
 
-removeSpaces :: BS.ByteString -> BS.ByteString
+removeSpaces :: T.Text -> T.Text
 removeSpaces =
-  BS.filter (/= space)
-  where
-    [space] = BS.unpack " " -- TODO: is there a better way to construct a ' ' Word8?
+  T.filter (`elem` T.unpack " ")
+
+parseFail
+  :: MP.MonadParsec Void s m
+  => [String]
+  -> m a
+parseFail =
+  MP.parseError . mkFancyError
+    where
+    mkFancyError errLst =
+      MP.FancyError 0 $ Set.fromList (map MP.ErrorFail errLst :: [MP.ErrorFancy Void])
+
+tshow :: Show a => a -> T.Text
+tshow = T.pack . show
