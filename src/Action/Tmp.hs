@@ -88,9 +88,11 @@ data ExprToken
   | ExprToken_Identifier (Identifier T.Text)
     deriving (Eq, Show, Ord)
 
-renderExprTokens :: [ExprToken] -> T.Text
+renderExprTokens
+  :: [ExprToken] -- TODO: NonEmpty or newtype
+  -> T.Text
 renderExprTokens =
-  mconcat . map renderToken
+  T.strip . mconcat . intersperse " " . map renderToken
   where
     renderToken = \case
       ExprToken_Paren parenList -> mconcat $ map renderParenExpr parenList
@@ -100,8 +102,8 @@ renderExprTokens =
 --    (zero argument function is a value)
 data Fun str = Fun
   { funName :: T.Text
-  , funArg :: [ExprToken]
-  , funRet :: [[ExprToken]]
+  , funArg :: [ExprToken] -- TODO: NonEmpty
+  , funRet :: [[ExprToken]] -- TODO: [NonEmpty]
   } deriving (Eq, Show, Ord)
 
 renderFun
@@ -139,25 +141,25 @@ pName modName = do
   name <- MP.dbg "name" $ P.tagText >>= \(TagText name) -> pure $ unlines [T.unpack name] `trace` name
   MP.dbg "a_close" $ P.tagClose "a"
   void pHasType
-  firstArg <- MP.dbg "firstArg" parseIdentifier >>= \case
+  firstArg <- MP.dbg "arg1" parseIdentifier >>= \case
     Left a -> pure a
     Right a -> pure a
   () <- pure $ show firstArg `trace` ()
   -- Zero or more args
-  let parseManyArgs = flip fix [] $ \go accum ->
-        parseIdentifier >>= \case
+  let parseManyArgs = flip fix ([], 2) $ \go (accum, count) ->
+        MP.dbg ("arg" <> show count) parseIdentifier >>= \case
           Left res -> pure $ reverse $ res : accum
-          Right res -> go $ res : accum
+          Right res -> go (res : accum, count + 1)
   remArgs <- MP.dbg "remArgs" parseManyArgs
   pure $ Fun
-    { funName = modName <> "." <> name
+    { funName = name
     , funArg = firstArg
     , funRet = remArgs
     }
   where
     parseIdentifier = do
       (idFragments, end) <- MP.someTill_
-        (traceAs "identifier" $ parseIdentifierFragment <|> parseParensFromTag)
+        (traceAs "identifierOrParens" $ parseIdentifierFragment <|> parseParensFromTag)
         ((Right <$> pArrow) <|> (Left <$> pEndFunctionSignature))
       let eRemainder = case end of
             Left () -> pure Nothing -- There's nothing left
@@ -212,8 +214,8 @@ pName modName = do
     -- do
     --   Optional:  <a ... class="link">Source</a>
     --   Mandatory: <a ... class="selflink">#</a>
-    pEndFunctionSignature = MP.dbg "entry end" $ void $ do
-      -- Source
+    pEndFunctionSignature = MP.dbg "entryEnd" $ void $ do
+      -- Optional "Source" link
       MP.optional $ do
         match $ \mi -> do
           TagOpen "a" attrs <- mi
@@ -222,15 +224,14 @@ pName modName = do
           TagText "Source" <- mi
           pure True
         P.tagClose "a"
-      -- #
-      MP.optional $ do
-        match $ \mi -> do
-          TagOpen "a" attrs <- mi
-          pure $ lookup "class" attrs == Just "selflink"
-        match $ \mi -> do
-          TagText "#" <- mi
-          pure True
-        P.tagClose "a"
+      -- Mandatory "#" link
+      match $ \mi -> do
+        TagOpen "a" attrs <- mi
+        pure $ lookup "class" attrs == Just "selflink"
+      match $ \mi -> do
+        TagText "#" <- mi
+        pure True
+      P.tagClose "a"
 
 parenFromText
   :: MP.ParsecT Void T.Text Identity [ParenExpr]
@@ -276,7 +277,7 @@ newParser modName =
         UselessTag _ ->
           go accum
         EOF ->
-          pure accum
+          pure $ reverse accum
 
 -- ### Util
 
