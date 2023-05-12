@@ -139,17 +139,17 @@ pName modName = do
     TagOpen "a" attrs <- mi
     pure $ lookup "class" attrs == Just "def"
   name <- MP.dbg "name" $ P.tagText >>= \(TagText name) -> pure $ unlines [T.unpack name] `trace` name
-  MP.dbg "a_close" $ P.tagClose "a"
+  _ <- MP.dbg "a_close" $ P.tagClose "a"
   void pHasType
-  firstArg <- MP.dbg "arg1" parseIdentifier >>= \case
-    Left a -> pure a
+  (firstArg, mNextIdentPrefix) <- MP.dbg "arg1" (parseIdentifier Nothing) >>= \case
+    Left a -> pure (a, Nothing)
     Right a -> pure a
   () <- pure $ show firstArg `trace` ()
   -- Zero or more args
-  let parseManyArgs = flip fix ([], 2) $ \go (accum, count) ->
-        MP.dbg ("arg" <> show count) parseIdentifier >>= \case
+  let parseManyArgs = flip fix (mNextIdentPrefix, [], 2) $ \go (mNextIdentPrefix', accum, count) ->
+        MP.dbg ("arg" <> show count) (parseIdentifier mNextIdentPrefix') >>= \case
           Left res -> pure $ reverse $ res : accum
-          Right res -> go (res : accum, count + 1)
+          Right (res, mNextIdentPrefix'') -> go (mNextIdentPrefix'', res : accum, count + 1)
   remArgs <- MP.dbg "remArgs" parseManyArgs
   pure $ Fun
     { funName = name
@@ -157,30 +157,53 @@ pName modName = do
     , funRet = remArgs
     }
   where
-    parseIdentifier = do
+    parseIdentifier mPrefix = do
       (idFragments, end) <- MP.someTill_
-        (traceAs "identifierOrParens" $ parseIdentifierFragment <|> parseParensFromTag)
+        (MP.dbg "identifierOrParens" $ parseIdentifierFragment <|> parseParensFromTag)
         ((Right <$> pArrow) <|> (Left <$> pEndFunctionSignature))
-      let eRemainder = case end of
-            Left () -> pure Nothing -- There's nothing left
-            Right remLhs -> fmap Just $ -- There's more left
-              runIdentity $ MP.runParserT parseParens (T.unpack modName) remLhs
-      remainder <- either (parseFail . (: []) . show) pure eRemainder
-      let result = idFragments ++ maybeToList remainder
+      let parseMaybeParensText
+            :: Maybe T.Text
+            -> MP.ParsecT Void [Tag T.Text] Identity ExprToken
+          parseMaybeParensText mParensText =
+              either (parseFail . (: []) . show) pure $
+                runIdentity $ MP.runParserT parseParens (T.unpack modName) (fromMaybe "" mParensText)
+          eRemainder :: MP.ParsecT Void [Tag T.Text] Identity (Maybe ExprToken, Maybe T.Text)
+          eRemainder = case end of
+            Left () -> pure (Nothing, Nothing) -- There's nothing left
+            Right (mBefore, mAfter) -> do -- There's more left
+              -- TODO: what if it's a type variable?
+              res <- parseMaybeParensText mBefore
+              pure (Just res, mAfter)
+      (mRemainder, mNextIdentPrefix) <- eRemainder -- "mNextIdentPrefix" is a terrible name for paren(s) after an arrow, which need to be included as a prefix of the next identifier we parse using 'parseIdentifier'
+      prevExtra <- parseMaybeParensText mPrefix
+      -- TODO: don't include "prevExtra" equal to "ExprToken_Paren []""
+      let result = prevExtra : idFragments ++ maybeToList mRemainder
       pure $ case end of
-        Left () -> Left result
-        Right _ -> Right result
-
-    traceAs name action = MP.dbg name action
+        Left () -> Left result -- no more left
+        Right _ -> Right (result, mNextIdentPrefix) -- more left
 
     pHasType =
       MP.dbg "has type" $ match $ \mi -> do
         TagText " :: " <- mi
         pure True
 
+    pArrow
+      :: MP.ParsecT Void [Tag T.Text] m
+          (Maybe T.Text, Maybe T.Text) -- (text before arrow, text after arrow)
     pArrow =
       MP.dbg "arrow" $ do
-        let testTag (TagText t) = " -> " `T.stripSuffix` t
+        let testTag (TagText t) =
+              let arrow = " -> "
+                  toResult t' = if T.null t' then Nothing else Just t'
+                  mResult =
+                    case arrow `T.breakOn` t of
+                      (_, "") -> Nothing -- text does not contain an arrow
+                      (prefix, suffix) ->
+                        Just
+                          ( toResult prefix
+                          , toResult $ fromMaybe (error "BUG: pArrow") $ T.stripPrefix arrow suffix
+                          )
+              in mResult
             testTag _ = Nothing
         MP.token testTag mempty
 
@@ -241,10 +264,7 @@ parenFromText = MP.dbg "parenFromText" $ fmap catMaybes $
     parenToken =
       MP.dbg "parenFromText.token" $ MP.token
         (`Map.lookup` charToParenExpr)
-        (Set.fromList [MP.Label expectedChars])
-
-    expectedChars :: NonEmpty Char
-    expectedChars = NE.fromList $ Map.elems parenExprToText
+        (Set.fromList [MP.Label $ NE.fromList "'(' or ')'"])
 
     charToParenExpr :: Map.Map Char ParenExpr
     charToParenExpr = mapSwap parenExprToText
