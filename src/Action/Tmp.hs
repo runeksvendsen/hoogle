@@ -30,30 +30,31 @@ import qualified Text.Megaparsec as MP
 import qualified Text.Megaparsec.Char as MP
 import qualified Text.Megaparsec.Debug as MP
 import Text.HTML.TagSoup (Tag(..))
+import qualified System.IO as IO
 
 testParseHtml :: IO ()
-testParseHtml = do
+testParseHtml = parsePrint "/nix/store/hs8dbwgs3mxj6qnl3zxbb8rp22722fv6-ghc-8.6.5-doc/share/doc/ghc/html/libraries/base-4.12.0.0/Prelude.html"
+
+parsePrint :: FilePath -> IO ()
+parsePrint fn = do
   eRes <- parseFile
-    -- "Data.Text.Internal.Builder"
-    "TODO"
-    "/nix/store/hs8dbwgs3mxj6qnl3zxbb8rp22722fv6-ghc-8.6.5-doc/share/doc/ghc/html/libraries/base-4.12.0.0/Prelude.html"
+    fn
   either
-    print -- TODO: use MP.errorBundlePretty
-    (\resLst -> do
-      putStrLn "Success! Results:"
+    (\err -> IO.hPutStrLn IO.stderr $ unlines ["Error parsing file: " <> fn, show err]) -- TODO: use MP.errorBundlePretty
+    (\(modName, resLst) -> do
+      IO.hPutStrLn IO.stderr (T.unpack modName)
       forM_ resLst $ \fun -> do
           TIO.putStrLn $ renderFun fun
     )
     eRes
 
-parseFile ::
-  T.Text
-  -> FilePath
-  -> IO (Either (MP.ParseErrorBundle [Tag T.Text] Void) [Res])
-parseFile modName fn = do
+parseFile
+  :: FilePath
+  -> IO (Either (MP.ParseErrorBundle [Tag T.Text] Void) (T.Text, [Res]))
+parseFile fn = do
   content <- Data.Text.IO.readFile fn
   let tags = Html.parseTags content
-  pure $ MP.parse (newParser modName) "lol" tags
+  pure $ MP.parse newParser "lol" tags
 
 -- | Fully qualified identifier
 newtype Identifier str = Identifier { unIdentifier :: str }
@@ -116,6 +117,21 @@ match =
   where
     match' :: (Maybe a -> Maybe Bool) -> a -> Bool
     match' f = \i -> fromMaybe False (f $ Just i)
+
+pModuleName
+  :: MP.ParsecT Void [Tag T.Text] m T.Text
+pModuleName = do
+  debug "moduleName.divModuleHeader" $ match $ \mi -> do
+    TagOpen "div" attrs <- mi
+    pure $ lookup "id" attrs == Just "module-header"
+  _ <- MP.skipManyTill P.anyTag (P.tagClose "table")
+  debug "moduleName.pCaption" $ match $ \mi -> do
+    TagOpen "p" attrs <- mi
+    pure $ lookup "class" attrs == Just "caption"
+  moduleName <- debug "moduleName" $ P.tagText >>= \(TagText name) -> pure name
+  _ <- P.tagClose "p"
+  _ <- P.tagClose "div"
+  pure moduleName
 
 pName
   :: T.Text
@@ -299,8 +315,14 @@ data Result str a
   | Good Res
   | EOF
 
-newParser :: T.Text -> MP.ParsecT Void [Tag T.Text] Identity [Res]
-newParser modName =
+newParser :: MP.ParsecT Void [Tag T.Text] Identity (T.Text, [Res])
+newParser = do
+  modName <- MP.skipManyTill P.anyTag pModuleName
+  resLst <- newParser' modName
+  pure (modName, resLst)
+
+newParser' :: T.Text -> MP.ParsecT Void [Tag T.Text] Identity [Res]
+newParser' modName =
   go []
   where
     parser = (Good <$> MP.try (pName modName)) <|> (UselessTag <$> P.anyTag) <|> (EOF <$ MP.eof)
