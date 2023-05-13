@@ -25,6 +25,7 @@ import qualified Data.List.NonEmpty as NE
 import qualified Action.Tmp.ParseTag as P
 import qualified Text.Megaparsec as MP
 import qualified Text.Megaparsec.Char as MP
+import qualified Text.Megaparsec.Error as MP
 import Data.Maybe (fromMaybe, isJust, maybeToList, catMaybes)
 import Control.Monad.Fix (mfix)
 import Data.Function (fix)
@@ -46,8 +47,9 @@ import Data.Functor.Identity (Identity (Identity), runIdentity)
 
 testParseHtml = do
   eRes <- parseFile
-    "Data.Text.Internal.Builder"
-    "/nix/store/hs8dbwgs3mxj6qnl3zxbb8rp22722fv6-ghc-8.6.5-doc/share/doc/ghc/html/libraries/base-4.12.0.0/GHC-IO-Encoding-UTF16.html"
+    -- "Data.Text.Internal.Builder"
+    "TODO"
+    "/nix/store/hs8dbwgs3mxj6qnl3zxbb8rp22722fv6-ghc-8.6.5-doc/share/doc/ghc/html/libraries/base-4.12.0.0/Prelude.html"
   either
     print -- TODO: use MP.errorBundlePretty
     (\resLst -> do
@@ -259,19 +261,34 @@ pName modName = do
 parenFromText
   :: MP.ParsecT Void T.Text Identity [ParenExpr]
 parenFromText = MP.dbg "parenFromText" $ fmap catMaybes $
-  MP.manyTill ((Just <$> parenToken) <|> (MP.space $> Nothing)) MP.eof
+  go []
   where
+    go accum = do
+      eRes <-
+        (MP.dbg "parenFromText.eof" $ Left <$> (MP.eof $> Nothing)) <|>
+        (MP.dbg "parenFromText.parenToken" $ fmap Right $ Just <$> parenToken) <|>
+        (MP.dbg "parenFromText.spaceChar" $ fmap Right $ MP.spaceChar $> Nothing) <|>
+        (MP.dbg "parenFromText.unexpected" $ Left . Just <$> MP.token Just mempty)
+      case eRes of
+        Right res -> go (res : accum) -- Parsed a space or paren: continue
+        Left Nothing -> pure $ reverse accum -- Parsed EOF: done
+        Left (Just char) -> MP.parseError $ -- Parsed an unwanted char: fail
+          MP.TrivialError
+            0
+            (Just (MP.Label $ NE.fromList [char]))  -- unexpected
+            expected
+
+    expected = (Set.fromList [MP.Label $ NE.fromList "'(' or ')'"])
+
     parenToken =
-      MP.dbg "parenFromText.token" $ MP.token
+      MP.token
         (`Map.lookup` charToParenExpr)
-        (Set.fromList [MP.Label $ NE.fromList "'(' or ')'"])
+        expected
 
     charToParenExpr :: Map.Map Char ParenExpr
-    charToParenExpr = mapSwap parenExprToText
-    parenExprToText :: Map.Map ParenExpr Char
-    parenExprToText = Map.fromList
-      [ (Paren_Start, '(')
-      , (Paren_End, ')')
+    charToParenExpr = Map.fromList
+      [ ('(', Paren_Start)
+      , (')', Paren_End)
       ]
 
     mapSwap :: Ord b => Map.Map a b -> Map.Map b a
