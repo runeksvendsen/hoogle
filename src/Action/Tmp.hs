@@ -15,7 +15,6 @@ import Data.Functor.Identity (runIdentity, Identity)
 import Data.List (intersperse)
 import Data.Maybe (fromMaybe, maybeToList, catMaybes)
 import Data.Void (Void)
-import Debug.Trace (trace)
 import qualified Action.Tmp.ParseTag as P
 import qualified Data.ByteString as BS
 import qualified Data.List.NonEmpty as NE
@@ -29,7 +28,6 @@ import qualified Data.Text.IO as TIO
 import qualified Text.HTML.TagSoup as Html
 import qualified Text.Megaparsec as MP
 import qualified Text.Megaparsec.Char as MP
-import qualified Text.Megaparsec.Debug as MP
 import Text.HTML.TagSoup (Tag(..))
 
 testParseHtml :: IO ()
@@ -122,25 +120,24 @@ pName
   :: T.Text
   -> MP.ParsecT Void [Tag T.Text] Identity Res
 pName modName = do
-  MP.dbg "p_open" $ match $ \mi -> do
+  debug "p_open" $ match $ \mi -> do
     TagOpen "p" attrs <- mi
     pure $ lookup "class" attrs == Just "src"
-  MP.dbg "a_open" $ match $ \mi -> do
+  debug "a_open" $ match $ \mi -> do
     TagOpen "a" attrs <- mi
     pure $ lookup "class" attrs == Just "def"
-  name <- MP.dbg "name" $ P.tagText >>= \(TagText name) -> pure $ unlines [T.unpack name] `trace` name
-  _ <- MP.dbg "a_close" $ P.tagClose "a"
+  name <- debug "name" $ P.tagText >>= \(TagText name) -> pure name
+  _ <- debug "a_close" $ P.tagClose "a"
   void pHasType
-  (firstArg, mNextIdentPrefix) <- MP.dbg "arg1" (parseIdentifier Nothing) >>= \case
+  (firstArg, mNextIdentPrefix) <- debug "arg1" (parseIdentifier Nothing) >>= \case
     Left a -> pure (a, Nothing)
     Right a -> pure a
-  () <- pure $ show firstArg `trace` ()
   -- Zero or more args
   let parseManyArgs = flip fix (mNextIdentPrefix, [], 2 :: Int) $ \go (mNextIdentPrefix', accum, count) ->
-        MP.dbg ("arg" <> show count) (parseIdentifier mNextIdentPrefix') >>= \case
+        debug ("arg" <> show count) (parseIdentifier mNextIdentPrefix') >>= \case
           Left res -> pure $ reverse $ res : accum
           Right (res, mNextIdentPrefix'') -> go (mNextIdentPrefix'', res : accum, count + 1)
-  remArgs <- MP.dbg "remArgs" parseManyArgs
+  remArgs <- debug "remArgs" parseManyArgs
   pure $ Fun
     { funName = name
     , funArg = firstArg
@@ -149,7 +146,7 @@ pName modName = do
   where
     parseIdentifier mPrefix = do
       (idFragments, end) <- MP.someTill_
-        (MP.dbg "identifierOrParens" $ parseIdentifierFragment <|> parseParensFromTag)
+        (debug "identifierOrParens" $ parseIdentifierFragment <|> parseParensFromTag)
         ((Right <$> pArrow) <|> (Left <$> pEndFunctionSignature))
       let parseMaybeParensText
             :: Maybe T.Text
@@ -173,7 +170,7 @@ pName modName = do
         Right _ -> Right (result, mNextIdentPrefix) -- more left
 
     pHasType =
-      MP.dbg "has type" $ match $ \mi -> do
+      debug "has type" $ match $ \mi -> do
         TagText " :: " <- mi
         pure True
 
@@ -181,7 +178,7 @@ pName modName = do
       :: MP.ParsecT Void [Tag T.Text] m
           (Maybe T.Text, Maybe T.Text) -- (text before arrow, text after arrow)
     pArrow =
-      MP.dbg "arrow" $ do
+      debug "arrow" $ do
         let testTag (TagText t) =
               let arrow = " -> "
                   toResult t' = if T.null t' then Nothing else Just t'
@@ -198,7 +195,7 @@ pName modName = do
         MP.token testTag mempty
 
     parseIdentifierFragment :: MP.ParsecT Void [Tag T.Text] Identity ExprToken
-    parseIdentifierFragment = MP.dbg "parseIdentifierFragment" $ do
+    parseIdentifierFragment = debug "parseIdentifierFragment" $ do
       moduleName <- do
         let testTag :: Tag T.Text -> Maybe T.Text
             testTag (TagOpen "a" attrs) = lookup "title" attrs
@@ -212,7 +209,7 @@ pName modName = do
       pure $ ExprToken_Identifier $ Identifier $ moduleName <> "." <> typeName
 
     parseParensFromTag :: MP.ParsecT Void [Tag T.Text] Identity ExprToken
-    parseParensFromTag = MP.dbg "parseParensFromTag" $ do
+    parseParensFromTag = debug "parseParensFromTag" $ do
       parens <- MP.token
         (\(token :: Tag T.Text) -> case token of { TagText t -> Just t; _ -> Nothing })
         (Set.fromList [MP.Label $ NE.fromList "text"])
@@ -227,7 +224,7 @@ pName modName = do
     -- do
     --   Optional:  <a ... class="link">Source</a>
     --   Mandatory: <a ... class="selflink">#</a>
-    pEndFunctionSignature = MP.dbg "entryEnd" $ void $ do
+    pEndFunctionSignature = debug "entryEnd" $ void $ do
       -- Optional "Source" link
       _ <- MP.optional $ do
         match $ \mi -> do
@@ -248,15 +245,15 @@ pName modName = do
 
 parenFromText
   :: MP.ParsecT Void T.Text Identity [ParenExpr]
-parenFromText = MP.dbg "parenFromText" $ fmap catMaybes $
+parenFromText = debug "parenFromText" $ fmap catMaybes $
   go []
   where
     go accum = do
       eRes <-
-        (MP.dbg "parenFromText.eof" $ Left <$> (MP.eof $> Nothing)) <|>
-        (MP.dbg "parenFromText.parenToken" $ fmap Right $ Just <$> parenToken) <|>
-        (MP.dbg "parenFromText.spaceChar" $ fmap Right $ MP.spaceChar $> Nothing) <|>
-        (MP.dbg "parenFromText.unexpected" $ Left . Just <$> MP.token Just mempty)
+        (debug "parenFromText.eof" $ Left <$> (MP.eof $> Nothing)) <|>
+        (debug "parenFromText.parenToken" $ fmap Right $ Just <$> parenToken) <|>
+        (debug "parenFromText.spaceChar" $ fmap Right $ MP.spaceChar $> Nothing) <|>
+        (debug "parenFromText.unexpected" $ Left . Just <$> MP.token Just mempty)
       case eRes of
         Right res -> go (res : accum) -- Parsed a space or paren: continue
         Left Nothing -> pure $ reverse accum -- Parsed EOF: done
@@ -323,3 +320,11 @@ parseFail =
 
 tshow :: Show a => a -> T.Text
 tshow = T.pack . show
+
+debug
+  :: (MP.VisualStream s, MP.ShowErrorComponent e, Show a)
+  => String
+  -> MP.ParsecT e s m a
+  -> MP.ParsecT e s m a
+debug name =
+  id
