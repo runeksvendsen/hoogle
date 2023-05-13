@@ -6,45 +6,33 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 module Action.Tmp where
 
-import qualified Text.HTMLEntity as HTML
-import qualified Data.ByteString.Char8 as C8
-import qualified Data.ByteString as BS
-import qualified Data.Text as T
-import qualified Data.Text.IO as T
-import qualified System.IO as IO
-import Control.Monad (forM_, unless, guard, void, when)
-import qualified Text.HTML.TagSoup as Html
-import Text.HTML.TagSoup (Tag(..))
-import Text.Show.Pretty
-import qualified Data.String
-import Data.Functor ((<&>), ($>))
-import Data.List (intersperse)
-import Data.Either (fromRight, lefts, rights)
-import Data.List.NonEmpty (NonEmpty( (:|) ))
-import qualified Data.List.NonEmpty as NE
-import qualified Action.Tmp.ParseTag as P
-import qualified Text.Megaparsec as MP
-import qualified Text.Megaparsec.Char as MP
-import qualified Text.Megaparsec.Error as MP
-import Data.Maybe (fromMaybe, isJust, maybeToList, catMaybes)
-import Control.Monad.Fix (mfix)
+import Control.Applicative ((<|>))
+import Control.Monad (forM_, void)
+import Data.Bifunctor (first)
 import Data.Function (fix)
-import qualified Data.Set as Set
-import qualified Text.Megaparsec.Debug as MP
+import Data.Functor (($>))
+import Data.Functor.Identity (runIdentity, Identity)
+import Data.List (intersperse)
+import Data.Maybe (fromMaybe, maybeToList, catMaybes)
 import Data.Void (Void)
 import Debug.Trace (trace)
-import Control.Applicative ((<|>))
-import qualified Data.Text.Encoding.Error as TEE
-import qualified Data.Text.Encoding as TE
-import qualified Data.Text.IO as TIO
-import qualified Text.StringLike as SL
-import Data.Bifunctor (bimap, first)
-import Data.Word (Word8)
+import qualified Action.Tmp.ParseTag as P
+import qualified Data.ByteString as BS
+import qualified Data.List.NonEmpty as NE
 import qualified Data.Map.Strict as Map
-import qualified Data.Tuple
+import qualified Data.Set as Set
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.Encoding.Error as TEE
 import qualified Data.Text.IO
-import Data.Functor.Identity (Identity (Identity), runIdentity)
+import qualified Data.Text.IO as TIO
+import qualified Text.HTML.TagSoup as Html
+import qualified Text.Megaparsec as MP
+import qualified Text.Megaparsec.Char as MP
+import qualified Text.Megaparsec.Debug as MP
+import Text.HTML.TagSoup (Tag(..))
 
+testParseHtml :: IO ()
 testParseHtml = do
   eRes <- parseFile
     -- "Data.Text.Internal.Builder"
@@ -148,7 +136,7 @@ pName modName = do
     Right a -> pure a
   () <- pure $ show firstArg `trace` ()
   -- Zero or more args
-  let parseManyArgs = flip fix (mNextIdentPrefix, [], 2) $ \go (mNextIdentPrefix', accum, count) ->
+  let parseManyArgs = flip fix (mNextIdentPrefix, [], 2 :: Int) $ \go (mNextIdentPrefix', accum, count) ->
         MP.dbg ("arg" <> show count) (parseIdentifier mNextIdentPrefix') >>= \case
           Left res -> pure $ reverse $ res : accum
           Right (res, mNextIdentPrefix'') -> go (mNextIdentPrefix'', res : accum, count + 1)
@@ -220,7 +208,7 @@ pName modName = do
         let testTag (TagText typeName) = Just typeName
             testTag _ = Nothing
         MP.token testTag mempty
-      P.tagClose "a"
+      _ <- P.tagClose "a"
       pure $ ExprToken_Identifier $ Identifier $ moduleName <> "." <> typeName
 
     parseParensFromTag :: MP.ParsecT Void [Tag T.Text] Identity ExprToken
@@ -241,7 +229,7 @@ pName modName = do
     --   Mandatory: <a ... class="selflink">#</a>
     pEndFunctionSignature = MP.dbg "entryEnd" $ void $ do
       -- Optional "Source" link
-      MP.optional $ do
+      _ <- MP.optional $ do
         match $ \mi -> do
           TagOpen "a" attrs <- mi
           pure $ lookup "class" attrs == Just "link"
@@ -291,9 +279,6 @@ parenFromText = MP.dbg "parenFromText" $ fmap catMaybes $
       , (')', Paren_End)
       ]
 
-    mapSwap :: Ord b => Map.Map a b -> Map.Map b a
-    mapSwap = Map.fromList . map Data.Tuple.swap . Map.assocs
-
 type Res = Fun T.Text
 
 data Result str a
@@ -301,6 +286,7 @@ data Result str a
   | Good Res
   | EOF
 
+newParser :: T.Text -> MP.ParsecT Void [Tag T.Text] Identity [Res]
 newParser modName =
   go []
   where
@@ -318,6 +304,7 @@ newParser modName =
 
 -- ### Util
 
+decodeUtf8 :: BS.ByteString -> T.Text
 decodeUtf8 = TE.decodeUtf8With TEE.lenientDecode
 
 removeSpaces :: T.Text -> T.Text
