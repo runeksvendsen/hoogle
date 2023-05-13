@@ -8,4 +8,4 @@ import System.Environment (getArgs)
 main :: IO ()
 main = do
   [fn] <- getArgs
-  Action.Tmp.main fn
+  Action.Tmp.testParseHtml
