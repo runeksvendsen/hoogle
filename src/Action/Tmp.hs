@@ -28,6 +28,7 @@ import qualified Data.Text.IO as TIO
 import qualified Text.HTML.TagSoup as Html
 import qualified Text.Megaparsec as MP
 import qualified Text.Megaparsec.Char as MP
+import qualified Text.Megaparsec.Debug as MP
 import Text.HTML.TagSoup (Tag(..))
 
 testParseHtml :: IO ()
@@ -222,9 +223,24 @@ pName modName = do
     parseParens = ExprToken_Paren <$> parenFromText
 
     -- do
+    --   Optional:  <span class="fixity">infixr 3</span>
+    --              <span class="rightedge"></span>
     --   Optional:  <a ... class="link">Source</a>
     --   Mandatory: <a ... class="selflink">#</a>
     pEndFunctionSignature = debug "entryEnd" $ void $ do
+      -- Optional fixity
+      _ <- MP.optional $ do
+        match $ \mi -> do
+          TagOpen "span" attrs <- mi
+          pure $ lookup "class" attrs == Just "fixity"
+        match $ \mi -> do
+          TagText _ <- mi
+          pure True
+        _ <- P.tagClose "span"
+        match $ \mi -> do
+          TagOpen "span" attrs <- mi
+          pure $ lookup "class" attrs == Just "rightedge"
+        P.tagClose "span"
       -- Optional "Source" link
       _ <- MP.optional $ do
         match $ \mi -> do
