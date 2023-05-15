@@ -4,7 +4,10 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-module Action.Tmp where
+module Action.Tmp
+( parsePrintMain
+)
+where
 
 import Control.Applicative ((<|>))
 import Control.Monad (forM_, void)
@@ -31,9 +34,14 @@ import qualified Text.Megaparsec.Char as MP
 import qualified Text.Megaparsec.Debug as MP
 import Text.HTML.TagSoup (Tag(..))
 import qualified System.IO as IO
+import qualified System.Environment as Env
 
-testParseHtml :: IO ()
-testParseHtml = parsePrint "/nix/store/hs8dbwgs3mxj6qnl3zxbb8rp22722fv6-ghc-8.6.5-doc/share/doc/ghc/html/libraries/base-4.12.0.0/Prelude.html"
+parsePrintMain :: IO ()
+parsePrintMain = do
+  fileLst <- Env.getArgs
+  forM_ fileLst $ \fn -> do
+    IO.hPutStrLn IO.stderr $ "Parsing file: " <> fn
+    parsePrint fn
 
 parsePrint :: FilePath -> IO ()
 parsePrint fn = do
