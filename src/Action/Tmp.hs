@@ -10,7 +10,7 @@ module Action.Tmp
 where
 
 import Control.Applicative ((<|>))
-import Control.Monad (forM_, void)
+import Control.Monad (forM_, void, forM)
 import Data.Bifunctor (first)
 import Data.Function (fix)
 import Data.Functor (($>))
@@ -39,20 +39,27 @@ import qualified System.Environment as Env
 parsePrintMain :: IO ()
 parsePrintMain = do
   fileLst <- Env.getArgs
-  forM_ fileLst $ \fn -> do
-    IO.hPutStrLn IO.stderr $ "Parsing file: " <> fn
+  IO.hPutStrLn IO.stderr $ "Parsing " <> show (length fileLst) <> " files..."
+  resultLst <- fmap concat $ forM fileLst $ \fn -> do
+    IO.hPutStrLn IO.stderr $ "Parsing file: " <> fn <> " ..."
     parsePrint fn
+  IO.hPutStrLn IO.stderr $ "Done parsing " <> show (length fileLst) <> " files."
+  IO.hPutStrLn IO.stderr $ "Got " <> show (length resultLst) <> " results."
 
-parsePrint :: FilePath -> IO ()
+parsePrint :: FilePath -> IO [Fun T.Text]
 parsePrint fn = do
   eRes <- parseFile
     fn
   either
-    (\err -> IO.hPutStrLn IO.stderr $ unlines ["Error parsing file: " <> fn, show err]) -- TODO: use MP.errorBundlePretty
+    (\err -> do
+      IO.hPutStrLn IO.stderr $ unlines ["Error parsing file: " <> fn, show err]
+      pure []
+    ) -- TODO: use MP.errorBundlePretty
     (\(modName, resLst) -> do
       IO.hPutStrLn IO.stderr (T.unpack modName)
       forM_ resLst $ \fun -> do
           TIO.putStrLn $ renderFun fun
+      pure resLst
     )
     eRes
 
