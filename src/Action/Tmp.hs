@@ -211,9 +211,8 @@ pName modName = do
           (Maybe T.Text, Maybe T.Text) -- (text before arrow, text after arrow)
     pArrow =
       debug "arrow" $ do
-        let testTag (TagText t) =
-              let arrow = " -> "
-                  toResult t' = if T.null t' then Nothing else Just t'
+        let testTag arrow (TagText t) =
+              let toResult t' = if T.null t' then Nothing else Just t'
                   mResult =
                     case arrow `T.breakOn` t of
                       (_, "") -> Nothing -- text does not contain an arrow
@@ -223,8 +222,8 @@ pName modName = do
                           , toResult $ fromMaybe (error "BUG: pArrow") $ T.stripPrefix arrow suffix
                           )
               in mResult
-            testTag _ = Nothing
-        MP.token testTag mempty
+            testTag _ _ = Nothing
+        MP.token (\tag -> testTag " -> " tag <|> testTag " → " tag) mempty
 
     parseIdentifierFragment :: MP.ParsecT Void [Tag T.Text] Identity ExprToken
     parseIdentifierFragment = debug "parseIdentifierFragment" $ do
